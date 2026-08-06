@@ -1,0 +1,38 @@
+[project]
+name = "txn-sentinel"
+version = "0.1.0"
+description = "Card-transaction fraud scoring on a synthetic transaction dataset."
+authors = [
+    { name = "Himanshu", email = "himanshu16397@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.141.1",
+    "lightgbm>=4.7.0",
+    "mlflow>=3.15.1",
+    "polars>=1.43.2",
+    "pyarrow>=25.0.0",
+    "pydantic>=2.13.4",
+    "scikit-learn>=1.9.0",
+    "uvicorn>=0.52.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.9.1",
+    "pytest>=9.1.1",
+    "ruff>=0.16.1",
+]
