@@ -1,0 +1,19 @@
+# Environment / secrets
+.env
+.venv/
+
+# Data and run outputs (never committed)
+data/
+results/
+mlruns/
+
+# Model artefacts
+*.ckpt
+*.pt
+
+# Python
+__pycache__/
+
+# Tool caches
+.ruff_cache/
+.pytest_cache/
