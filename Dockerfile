@@ -10,6 +10,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH=/app/.venv/bin:$PATH \
     PORT=8000
 
+# LightGBM links against libgomp.so.1, absent from python:3.11-slim. Without this
+# the image builds cleanly and then fails at import time.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
