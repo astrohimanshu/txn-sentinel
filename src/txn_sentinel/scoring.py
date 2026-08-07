@@ -63,6 +63,22 @@ def load_threshold() -> float:
 
 
 @dataclass(frozen=True)
+class AccountStats:
+    """Lifetime aggregates for an account, as a feature store would supply them.
+
+    Features like ``txn_count_prior`` and ``amount_mean_prior`` accumulate over an
+    account's entire life -- the test split has a median of 5,713 prior transactions
+    and a maximum of 69,866. They cannot be reconstructed from a bounded history
+    window, so serving them from the request's ``history`` alone pins them at the
+    window length and turns a top-ranked feature into a constant. A real deployment
+    reads these from a feature store; the API takes them as input.
+    """
+
+    prior_count: int
+    prior_amount_mean: float | None = None
+
+
+@dataclass(frozen=True)
 class Txn:
     """One transaction, as the API receives it."""
 
@@ -83,7 +99,11 @@ def _code(value: str | None, levels: tuple[str, ...], default: str) -> int:
 
 
 def build_feature_row(
-    user: int, card_index: int, transaction: Txn, history: list[Txn]
+    user: int,
+    card_index: int,
+    transaction: Txn,
+    history: list[Txn],
+    stats: AccountStats | None = None,
 ) -> tuple[np.ndarray, dict[str, float]]:
     """Compute the model input for ``transaction`` given the account's past.
 
@@ -125,6 +145,19 @@ def build_feature_row(
         .collect()
     )
 
+    if stats is not None:
+        # Override the window-derived cumulative features with the true lifetime
+        # values. Windowed features (1h/24h/7d) are left alone: those ARE correct
+        # from recent history, provided the window is covered.
+        mean = stats.prior_amount_mean
+        featured = featured.with_columns(
+            pl.lit(stats.prior_count, dtype=pl.Int64).alias("txn_count_prior"),
+            pl.lit(mean, dtype=pl.Float64).alias("amount_mean_prior"),
+            pl.lit(
+                None if not mean else float(transaction.amount) / mean, dtype=pl.Float64
+            ).alias("amount_vs_prior_mean"),
+        )
+
     columns = feature_columns() + RAW_FEATURES
     last = featured.tail(1).select(columns)
     values = last.to_numpy().astype(np.float32)
@@ -144,8 +177,13 @@ class Scorer:
         self.name = "lightgbm"
 
     def score(
-        self, user: int, card_index: int, transaction: Txn, history: list[Txn]
+        self,
+        user: int,
+        card_index: int,
+        transaction: Txn,
+        history: list[Txn],
+        stats: AccountStats | None = None,
     ) -> tuple[float, dict[str, float]]:
-        x, features = build_feature_row(user, card_index, transaction, history)
+        x, features = build_feature_row(user, card_index, transaction, history, stats)
         score = float(self.booster.predict(x)[0])
         return score, features

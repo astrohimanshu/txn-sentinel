@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from txn_sentinel import __version__
-from txn_sentinel.scoring import Scorer, Txn
+from txn_sentinel.scoring import AccountStats, Scorer, Txn
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REPLAY_SAMPLE = REPO_ROOT / "models" / "replay_sample.json"
@@ -52,6 +52,13 @@ class TransactionIn(BaseModel):
         )
 
 
+class AccountStatsIn(BaseModel):
+    prior_count: int = Field(description="Transactions on this account before this one.")
+    prior_amount_mean: float | None = Field(
+        default=None, description="Mean amount over all prior transactions."
+    )
+
+
 class ScoreRequest(BaseModel):
     user: int
     card_index: int = Field(
@@ -62,6 +69,12 @@ class ScoreRequest(BaseModel):
         default_factory=list,
         description="Prior transactions on this account. Entries at or after the "
         "transaction's timestamp are ignored.",
+    )
+    account_stats: AccountStatsIn | None = Field(
+        default=None,
+        description="Lifetime aggregates from a feature store. Without these, "
+        "cumulative features are capped at the length of `history`, which does not "
+        "match what the model saw in training.",
     )
 
 
@@ -113,6 +126,12 @@ def score(request: ScoreRequest) -> ScoreResponse:
         request.card_index,
         request.transaction.to_txn(),
         [h.to_txn() for h in request.history],
+        AccountStats(
+            prior_count=request.account_stats.prior_count,
+            prior_amount_mean=request.account_stats.prior_amount_mean,
+        )
+        if request.account_stats
+        else None,
     )
     return ScoreResponse(
         score=value,
@@ -235,7 +254,8 @@ async function replay() {
       res = await (await fetch("score", {
         method: "POST", headers: {"content-type": "application/json"},
         body: JSON.stringify({user: c.user, card_index: c.card_index,
-                              transaction: c.transaction, history: c.history || []})
+                              transaction: c.transaction, history: c.history || [],
+                              account_stats: c.account_stats || null})
       })).json();
     } catch (e) { continue; }
     lats.push(performance.now() - t0);

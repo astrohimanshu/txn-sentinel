@@ -77,7 +77,9 @@ def main() -> int:
 
     cfg = SplitConfig.load()
     _, _, test_lf = split_frames(add_velocity_features(pl.scan_parquet(PARQUET)), cfg)
-    test = test_lf.select(["user", "card_index", *TXN_FIELDS, "is_fraud"]).collect()
+    test = test_lf.select(
+        ["user", "card_index", *TXN_FIELDS, "is_fraud", "txn_count_prior", "amount_mean_prior"]
+    ).collect()
 
     rng = np.random.default_rng(SEED)
     frauds = test.filter(pl.col("is_fraud"))
@@ -115,6 +117,15 @@ def main() -> int:
                 "transaction": _txn(row),
                 "history": [_txn(r) for r in prior[-HISTORY_DEPTH:]],
                 "is_fraud": bool(row["is_fraud"]),
+                # True lifetime aggregates, as a feature store would return.
+                "account_stats": {
+                    "prior_count": int(row["txn_count_prior"]),
+                    "prior_amount_mean": (
+                        None
+                        if row["amount_mean_prior"] is None
+                        else float(row["amount_mean_prior"])
+                    ),
+                },
             }
         )
 
