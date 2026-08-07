@@ -40,6 +40,32 @@ def test_config_loads_from_the_repo_file():
     assert cfg.account_key == ("user", "card_index")
 
 
+def test_config_column_names_match_the_processed_schema():
+    """The config must name snake_case columns, not the raw CSV headers.
+
+    convert_parquet.py renames every column, so a config still saying "Year" or
+    "Is Fraud?" parses fine and then fails only once it meets real data.
+    """
+    cfg = SplitConfig.load()
+    processed_columns = {
+        "user",
+        "card_index",
+        "year",
+        "month",
+        "day",
+        "timestamp",
+        "amount",
+        "is_fraud",
+        "merchant_id",
+        "merchant_state",
+    }
+    assert cfg.split_column in processed_columns
+    assert cfg.label_column in processed_columns
+    assert cfg.timestamp_column in processed_columns
+    for key in cfg.account_key:
+        assert key in processed_columns
+
+
 def test_splits_are_disjoint_and_ordered():
     train, val, test = (df.collect() for df in split_frames(_frame(), CFG))
 

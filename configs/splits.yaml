@@ -16,7 +16,9 @@
 #     are kept in train: they cost almost nothing and give velocity features real
 #     prior history for the accounts that existed then.
 
-split_column: Year
+# Column names below are the snake_case ones produced by scripts/convert_parquet.py,
+# not the raw CSV headers.
+split_column: year
 
 train:
   max_year: 2017
