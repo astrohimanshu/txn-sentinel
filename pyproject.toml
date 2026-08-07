@@ -33,6 +33,7 @@ testpaths = ["tests"]
 [dependency-groups]
 dev = [
     "httpx2>=2.9.1",
+    "kaggle>=2.2.4",
     "pytest>=9.1.1",
     "ruff>=0.16.1",
 ]
