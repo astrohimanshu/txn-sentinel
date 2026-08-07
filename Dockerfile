@@ -14,6 +14,9 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
 COPY src ./src
+# Trained model, operating threshold and replay sample. Committed rather than fetched
+# at runtime so the image is reproducible from a tagged release.
+COPY models ./models
 
 RUN uv sync --locked --no-dev
 

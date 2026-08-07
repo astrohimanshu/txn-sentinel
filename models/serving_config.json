@@ -1,0 +1,6 @@
+{
+  "model_file": "lightgbm_baseline.txt",
+  "threshold": 0.06289730483771024,
+  "operating_budget": 0.001,
+  "chosen_on": "validation (2018)"
+}
