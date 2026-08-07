@@ -1,0 +1,39 @@
+# Time-based split boundaries.
+#
+# FROZEN. Once the test set has been evaluated against, these values do not move.
+# Adjusting a boundary after seeing a test score is how you fool yourself into
+# reporting an improvement that does not exist.
+#
+# Chosen from the Phase 1 profile of the raw file (24,386,900 rows, 1991-2020):
+#
+#   * 2020 holds 336,500 rows and ZERO labelled frauds. Used as a test set it makes
+#     PR-AUC undefined; used in training it teaches the model that recent traffic is
+#     never fraudulent. It is excluded outright.
+#   * The yearly fraud rate is unstable -- 0.015% in 2017 against 0.209% in 2016 --
+#     so the test year's own prevalence is reported alongside every metric rather
+#     than assumed to match the global 0.1220%.
+#   * Years before roughly 2005 carry negligible volume (1991 has 1,585 rows) but
+#     are kept in train: they cost almost nothing and give velocity features real
+#     prior history for the accounts that existed then.
+
+split_column: Year
+
+train:
+  max_year: 2017
+validation:
+  year: 2018
+test:
+  year: 2019
+
+exclude_years: [2020]
+exclude_reason: "partial year, 336,500 rows, zero labelled fraud"
+
+# The account key.
+#
+# `Card` alone takes only 9 distinct values -- it is an index WITHIN a user, not a
+# card identifier. Grouping any per-card feature on `Card` by itself silently blends
+# 2,000 unrelated people into nine histories. Always group on the pair.
+account_key: [user, card_index]
+
+label_column: is_fraud
+timestamp_column: timestamp
