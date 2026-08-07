@@ -1,0 +1,42 @@
+name: Image
+
+# Builds the container image and publishes it to the GitHub Container Registry.
+#
+# Azure for Students blocks ACR Tasks (TasksOperationsNotAllowed), so `az acr build`
+# cannot build server-side, and neither the laptop nor the cluster has a Docker
+# daemon. GitHub's runners do. Pushing to ghcr.io uses the automatic GITHUB_TOKEN,
+# so this adds no long-lived credential anywhere -- the image is then pulled into
+# ACR from the laptop with `az acr import`, which needs no registry password either.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
