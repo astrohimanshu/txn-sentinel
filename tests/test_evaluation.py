@@ -6,6 +6,7 @@ import pytest
 from txn_sentinel.evaluation import (
     bootstrap_ci,
     expected_cost,
+    flag_top_k,
     mcnemar,
     pr_auc,
     recall_at_budget,
@@ -33,6 +34,32 @@ def test_recall_at_budget_misses_a_bottom_ranked_fraud():
     y_true[0] = 1
     y_score = np.arange(100, dtype=float)  # the fraud scores lowest
     assert recall_at_budget(y_true, y_score, 0.01) == pytest.approx(0.0)
+
+
+def test_tied_scores_still_honour_the_budget():
+    """Regression: an aggressive scale_pos_weight saturates the sigmoid and ties
+    thousands of scores. Threshold-based selection then flags far more than the
+    budget, which made three different budgets report identical recall."""
+    n = 10_000
+    y_score = np.ones(n)  # every score identical -- the pathological case
+    y_true = np.zeros(n, dtype=int)
+    y_true[:100] = 1
+
+    for budget in (0.001, 0.01, 0.1):
+        flagged = flag_top_k(y_score, budget)
+        assert flagged.sum() == round(budget * n)
+
+
+def test_different_budgets_give_different_recall():
+    rng = np.random.default_rng(0)
+    y_true = np.zeros(20_000, dtype=int)
+    y_true[:200] = 1
+    # Positives rank higher on average but overlap the negatives.
+    y_score = rng.random(20_000) + y_true * 0.3
+
+    r_small = recall_at_budget(y_true, y_score, 0.001)
+    r_large = recall_at_budget(y_true, y_score, 0.05)
+    assert r_small < r_large
 
 
 def test_budget_outside_the_unit_interval_is_rejected():

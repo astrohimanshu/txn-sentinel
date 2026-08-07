@@ -37,15 +37,33 @@ def roc_auc(y_true: np.ndarray, y_score: np.ndarray) -> float:
     return float(roc_auc_score(y_true, y_score))
 
 
-def threshold_for_budget(y_score: np.ndarray, budget: float) -> float:
-    """Score threshold that flags exactly the top ``budget`` fraction of traffic.
+def flag_top_k(y_score: np.ndarray, budget: float) -> np.ndarray:
+    """Boolean mask flagging exactly ``round(budget * n)`` highest-scoring rows.
 
-    ``budget`` is the share of transactions a review team can look at, e.g. 0.001
-    for one in a thousand.
+    Rank-based rather than threshold-based, and deliberately so. A review team can
+    look at k transactions, not "however many happen to exceed a score". Thresholding
+    with ``y_score >= quantile`` breaks badly when scores tie: an aggressive
+    ``scale_pos_weight`` saturates the sigmoid, thousands of rows share a score, and
+    a nominal 0.1% budget silently flags several percent of traffic -- inflating
+    review cost and making different budgets return identical recall.
     """
     if not 0.0 < budget <= 1.0:
         raise ValueError(f"budget must be in (0, 1], got {budget}")
-    return float(np.quantile(y_score, 1.0 - budget))
+    n = y_score.shape[0]
+    k = min(n, max(1, int(round(budget * n))))
+    mask = np.zeros(n, dtype=bool)
+    # argpartition is O(n) and enough -- the order within the top k does not matter.
+    mask[np.argpartition(-y_score, k - 1)[:k]] = True
+    return mask
+
+
+def threshold_for_budget(y_score: np.ndarray, budget: float) -> float:
+    """Lowest score among the top ``budget`` fraction.
+
+    Reported so an operating point can be deployed, but evaluation uses
+    :func:`flag_top_k` because ties make this threshold flag more than k rows.
+    """
+    return float(y_score[flag_top_k(y_score, budget)].min())
 
 
 def recall_at_budget(y_true: np.ndarray, y_score: np.ndarray, budget: float) -> float:
@@ -53,8 +71,24 @@ def recall_at_budget(y_true: np.ndarray, y_score: np.ndarray, budget: float) -> 
     positives = y_true.sum()
     if positives == 0:
         raise ValueError("no positives in y_true; recall is undefined")
-    threshold = threshold_for_budget(y_score, budget)
-    return float(y_true[y_score >= threshold].sum() / positives)
+    return float(y_true[flag_top_k(y_score, budget)].sum() / positives)
+
+
+def cost_of_flagging(
+    y_true: np.ndarray,
+    flagged: np.ndarray,
+    amounts: np.ndarray,
+    review_cost: float = DEFAULT_REVIEW_COST,
+) -> float:
+    """Total cost given an explicit set of flagged transactions.
+
+    A missed fraud costs its transaction amount; a false alarm costs one review.
+    Flagged frauds are assumed to be stopped and so cost nothing. This is the number
+    that decides which model is actually better.
+    """
+    missed_fraud = (~flagged) & (y_true == 1)
+    false_alarm = flagged & (y_true == 0)
+    return float(np.abs(amounts[missed_fraud]).sum() + false_alarm.sum() * review_cost)
 
 
 def expected_cost(
@@ -64,16 +98,19 @@ def expected_cost(
     amounts: np.ndarray,
     review_cost: float = DEFAULT_REVIEW_COST,
 ) -> float:
-    """Total cost of operating at ``threshold``.
+    """Cost of operating at a score threshold."""
+    return cost_of_flagging(y_true, y_score >= threshold, amounts, review_cost)
 
-    A missed fraud costs its transaction amount; a false alarm costs one review.
-    Flagged frauds are assumed to be stopped and so cost nothing. This is the
-    number that decides which model is actually better.
-    """
-    flagged = y_score >= threshold
-    missed_fraud = (~flagged) & (y_true == 1)
-    false_alarm = flagged & (y_true == 0)
-    return float(np.abs(amounts[missed_fraud]).sum() + false_alarm.sum() * review_cost)
+
+def expected_cost_at_budget(
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    budget: float,
+    amounts: np.ndarray,
+    review_cost: float = DEFAULT_REVIEW_COST,
+) -> float:
+    """Cost of reviewing exactly the top ``budget`` fraction. Tie-safe."""
+    return cost_of_flagging(y_true, flag_top_k(y_score, budget), amounts, review_cost)
 
 
 def cost_curve(
@@ -83,15 +120,18 @@ def cost_curve(
     review_cost: float = DEFAULT_REVIEW_COST,
     n_points: int = 200,
 ) -> dict[str, np.ndarray]:
-    """Expected cost across candidate thresholds, for picking an operating point."""
-    quantiles = np.linspace(0.90, 0.9999, n_points)
-    thresholds = np.quantile(y_score, quantiles)
+    """Expected cost across candidate review budgets, for picking an operating point.
+
+    Swept over budgets rather than raw thresholds so the x-axis is the quantity an
+    operations team actually controls, and so score ties cannot distort it.
+    """
+    budgets = np.geomspace(1e-5, 0.05, n_points)
     costs = np.array(
-        [expected_cost(y_true, y_score, t, amounts, review_cost) for t in thresholds]
+        [expected_cost_at_budget(y_true, y_score, b, amounts, review_cost) for b in budgets]
     )
     return {
-        "review_fraction": 1.0 - quantiles,
-        "threshold": thresholds,
+        "review_fraction": budgets,
+        "threshold": np.array([threshold_for_budget(y_score, b) for b in budgets]),
         "cost": costs,
     }
 
@@ -182,6 +222,8 @@ class EvalReport:
     threshold: float
     expected_cost: float
     baseline_cost_no_model: float
+    n_flagged: int = 0
+    operating_budget: float = 0.0
     calibration: list[dict] = field(default_factory=list)
 
     def summary(self) -> str:
@@ -195,9 +237,13 @@ class EvalReport:
         for budget, recall in sorted(self.recall_at_budget.items()):
             lines.append(f"  recall@{budget:<7} {recall:.4f}")
         saved = self.baseline_cost_no_model - self.expected_cost
+        verdict = "saved" if saved >= 0 else "WORSE THAN NO MODEL by"
+        lines.append(
+            f"  operating at {self.operating_budget:.2%} budget = {self.n_flagged:,} reviews"
+        )
         lines.append(
             f"  expected cost {self.expected_cost:,.0f} vs {self.baseline_cost_no_model:,.0f} "
-            f"with no model ({saved:,.0f} saved)"
+            f"with no model ({verdict} {abs(saved):,.0f})"
         )
         return "\n".join(lines)
 
@@ -214,6 +260,7 @@ def evaluate(
 ) -> EvalReport:
     """Full report for one model on one split."""
     threshold = threshold_for_budget(y_score, operating_budget)
+    flagged = flag_top_k(y_score, operating_budget)
     return EvalReport(
         split=split,
         n=int(y_true.shape[0]),
@@ -224,7 +271,9 @@ def evaluate(
         roc_auc=roc_auc(y_true, y_score),
         recall_at_budget={f"{b:.2%}": recall_at_budget(y_true, y_score, b) for b in budgets},
         threshold=threshold,
-        expected_cost=expected_cost(y_true, y_score, threshold, amounts, review_cost),
+        expected_cost=cost_of_flagging(y_true, flagged, amounts, review_cost),
+        n_flagged=int(flagged.sum()),
+        operating_budget=operating_budget,
         # Flagging nothing: every fraud is missed, no reviews are paid for.
         baseline_cost_no_model=float(np.abs(amounts[y_true == 1]).sum()),
         calibration=calibration_table(y_true, y_score),
